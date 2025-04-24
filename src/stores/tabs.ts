@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 export type Tab = {
     /** UUID for the tab */
     id: string
+    isPinned?: boolean
     customTitle?: string
 
     originalTab: chrome.tabs.Tab
@@ -22,14 +23,14 @@ async function gatherTabs(): Promise<Tab[]> {
 
 export const useTabsStore = defineStore('tabs', () => {
     const activeTabId = ref<string>()
-    const tabs = ref<Tab[]>([])
+    const pinnedTabs = ref<Tab[]>([])
+    const unpinnedTabs = ref<Tab[]>([])
+
+    const tabs = computed(() => [...pinnedTabs.value, ...unpinnedTabs.value])
 
     function mutateTabByOriginalId(originalTabId: number, callback: (tab: Tab) => void) {
-        const tabIndex = tabs.value.findIndex((tab) => tab.originalTab.id === originalTabId)
-        if (tabIndex === -1) {
-            return
-        }
-        callback(tabs.value[tabIndex])
+        const tab = tabs.value.find((tab) => tab.originalTab.id === originalTabId)
+        if (tab) callback(tab)
     }
 
     function activateTab(tabId: string) {
@@ -44,28 +45,46 @@ export const useTabsStore = defineStore('tabs', () => {
         chrome.tabs.create({})
     }
 
+    function changePinState(tabId: string) {
+        const tab = tabs.value.find((tab) => tab.id === tabId)
+        if (!tab) return
+
+        if (tab.isPinned) {
+            pinnedTabs.value = pinnedTabs.value.filter((tab) => tab.id !== tabId)
+            unpinnedTabs.value.push(tab)
+        } else {
+            unpinnedTabs.value = unpinnedTabs.value.filter((tab) => tab.id !== tabId)
+            pinnedTabs.value.push(tab)
+        }
+
+        tab.isPinned = !tab.isPinned
+    }
+
     onMounted(() => {
         gatherTabs().then((newTabs) => {
-            tabs.value = newTabs
-            const activeTab = tabs.value.find((tab) => tab.originalTab.active)
+            unpinnedTabs.value = newTabs
+            const activeTab = unpinnedTabs.value.find((tab) => tab.originalTab.active)
             if (activeTab) {
                 activeTabId.value = activeTab.id
             }
         })
 
         chrome.tabs.onCreated.addListener((tab) => {
-            tabs.value.push({
+            unpinnedTabs.value.push({
                 id: window.crypto.randomUUID(),
                 originalTab: tab,
             })
         })
 
         chrome.tabs.onRemoved.addListener((tabId) => {
-            const tabIndex = tabs.value.findIndex((tab) => tab.originalTab.id === tabId)
-            if (tabIndex === -1) {
-                return
+            const tab = tabs.value.find((tab) => tab.originalTab.id === tabId)
+            if (!tab) return
+
+            if (tab.isPinned) {
+                pinnedTabs.value = pinnedTabs.value.filter((tab) => tab.originalTab.id !== tabId)
+            } else {
+                unpinnedTabs.value = unpinnedTabs.value.filter((tab) => tab.originalTab.id !== tabId)
             }
-            tabs.value.splice(tabIndex, 1)
         })
 
         chrome.tabs.onUpdated.addListener((tabId, changeInfo, originalTab) => {
@@ -76,12 +95,10 @@ export const useTabsStore = defineStore('tabs', () => {
 
         chrome.tabs.onActivated.addListener((activeInfo) => {
             const tab = tabs.value.find((tab) => tab.originalTab.id === activeInfo.tabId)
-            if (!tab) {
-                return
-            }
+            if (!tab) return (activeTabId.value = undefined)
             activeTabId.value = tab.id
         })
     })
 
-    return { tabs, activeTabId, activateTab, removeTab, newTab }
+    return { tabs, unpinnedTabs, pinnedTabs, activeTabId, activateTab, removeTab, newTab, changePinState }
 })

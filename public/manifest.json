@@ -6,5 +6,11 @@
     "permissions": ["tabs", "sidePanel"],
     "side_panel": {
         "default_path": "index.html"
+    },
+    "action": {
+        "default_title": "Open Tabs to the side"
+    },
+    "background": {
+        "service_worker": "sw.js"
     }
 }
