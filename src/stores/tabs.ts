@@ -1,5 +1,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { defineStore } from 'pinia'
+import { useStorageAsync } from '@vueuse/core'
+import { chromeAsyncLocalStorage } from '@/utils/storage'
 
 export type Tab = {
     /** UUID for the tab */
@@ -23,8 +25,10 @@ async function gatherTabs(): Promise<Tab[]> {
 
 export const useTabsStore = defineStore('tabs', () => {
     const activeTabId = ref<string>()
-    const pinnedTabs = ref<Tab[]>([])
-    const unpinnedTabs = ref<Tab[]>([])
+    // const pinnedTabs = ref<Tab[]>([])
+    // const unpinnedTabs = ref<Tab[]>([])
+    const pinnedTabs = useStorageAsync<Tab[]>('pinnedTabs', [], chromeAsyncLocalStorage)
+    const unpinnedTabs = useStorageAsync<Tab[]>('unpinnedTabs', [], chromeAsyncLocalStorage)
 
     const tabs = computed(() => [...pinnedTabs.value, ...unpinnedTabs.value])
 

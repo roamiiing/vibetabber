@@ -3,7 +3,7 @@
     "name": "VibeTabber",
     "version": "1.0.0",
     "description": "Extension for managing tabs like Arc",
-    "permissions": ["tabs", "sidePanel"],
+    "permissions": ["tabs", "sidePanel", "storage"],
     "side_panel": {
         "default_path": "index.html"
     },
