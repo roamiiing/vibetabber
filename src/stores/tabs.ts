@@ -3,16 +3,55 @@ import { defineStore } from 'pinia'
 import { useStorageAsync } from '@vueuse/core'
 import { chromeAsyncLocalStorage } from '@/utils/storage'
 
-export type Tab = {
+export type CommonTab = {
     /** UUID for the tab */
     id: string
-    isPinned?: boolean
+
+    /** Current title of the tab, synced with chrome */
+    title: string
+
+    /** Title that user set themself */
     customTitle?: string
 
+    /** **Current** url of the tab, synced with chrome */
+    url: string
+
+    /** Favicon url of the tab */
+    faviconUrl?: string
+
+    chromeId: number
+
+    /**
+     * Just in case we need it for migration purposes
+     * Do not use it in extension logic
+     * @deprecated
+     */
     originalTab: chrome.tabs.Tab
 }
 
-async function gatherTabs(): Promise<Tab[]> {
+export type PinnedTab = CommonTab & {
+    isPinned: true
+
+    /** Url that was present when the tab was pinned */
+    pinnedUrl: string
+}
+
+export type UnpinnedTab = CommonTab & {
+    isPinned: false
+}
+
+export type Tab = PinnedTab | UnpinnedTab
+
+function chromeTabToCustomTab(chromeTab: chrome.tabs.Tab, previousTab?: Tab): Tab {
+    const commonTab: CommonTab = {
+        id: previousTab?.id ?? window.crypto.randomUUID(),
+        chromeId: chromeTab.id as number,
+        url: chromeTab.url as string,
+        faviconUrl: chromeTab.favIconUrl,
+    }
+}
+
+async function gatherTabs(): Promise<CommonTab[]> {
     const tabs = await chrome.tabs.query({})
 
     return tabs.map((tab) => {
@@ -25,14 +64,12 @@ async function gatherTabs(): Promise<Tab[]> {
 
 export const useTabsStore = defineStore('tabs', () => {
     const activeTabId = ref<string>()
-    // const pinnedTabs = ref<Tab[]>([])
-    // const unpinnedTabs = ref<Tab[]>([])
-    const pinnedTabs = useStorageAsync<Tab[]>('pinnedTabs', [], chromeAsyncLocalStorage)
-    const unpinnedTabs = useStorageAsync<Tab[]>('unpinnedTabs', [], chromeAsyncLocalStorage)
+    const pinnedTabs = useStorageAsync<PinnedTab[]>('pinnedTabs', [], chromeAsyncLocalStorage)
+    const unpinnedTabs = useStorageAsync<UnpinnedTab[]>('unpinnedTabs', [], chromeAsyncLocalStorage)
 
     const tabs = computed(() => [...pinnedTabs.value, ...unpinnedTabs.value])
 
-    function mutateTabByOriginalId(originalTabId: number, callback: (tab: Tab) => void) {
+    function mutateTabByOriginalId(originalTabId: number, callback: (tab: CommonTab) => void) {
         const tab = tabs.value.find((tab) => tab.originalTab.id === originalTabId)
         if (tab) callback(tab)
     }
