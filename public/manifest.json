@@ -8,7 +8,7 @@
         "default_path": "index.html"
     },
     "action": {
-        "default_title": "Open Tabs to the side"
+        "default_title": "Open Tabs"
     },
     "background": {
         "service_worker": "sw.js"

@@ -1,145 +1,144 @@
-import { ref, computed, onMounted } from 'vue'
+import { useStorageAsync, watchOnce } from '@vueuse/core'
 import { defineStore } from 'pinia'
-import { useStorageAsync } from '@vueuse/core'
-import { chromeAsyncLocalStorage } from '@/utils/storage'
+import { ref, computed, readonly } from 'vue'
 
-export type CommonTab = {
-    /** UUID for the tab */
-    id: string
+import { chromeTabToCustomTab, pinnedTabToUnpinnedTab, unpinnedTabToPinnedTab } from '@/mappers/tabs'
+import type { PinnedTab, Tab, UnpinnedTab } from '@/models/tab'
+import { deleteFromArrayByReference, withElement, withElementAsync } from '@/utils/arrays'
+import { swapObjectProperties } from '@/utils/objects'
+import { LockableChromeAsyncStorage } from '@/utils/storage'
 
-    /** Current title of the tab, synced with chrome */
-    title: string
-
-    /** Title that user set themself */
-    customTitle?: string
-
-    /** **Current** url of the tab, synced with chrome */
-    url: string
-
-    /** Favicon url of the tab */
-    faviconUrl?: string
-
-    chromeId: number
-
-    /**
-     * Just in case we need it for migration purposes
-     * Do not use it in extension logic
-     * @deprecated
-     */
-    originalTab: chrome.tabs.Tab
+type StoredTabs = {
+    pinned: PinnedTab[]
+    unpinned: UnpinnedTab[]
 }
 
-export type PinnedTab = CommonTab & {
-    isPinned: true
-
-    /** Url that was present when the tab was pinned */
-    pinnedUrl: string
-}
-
-export type UnpinnedTab = CommonTab & {
-    isPinned: false
-}
-
-export type Tab = PinnedTab | UnpinnedTab
-
-function chromeTabToCustomTab(chromeTab: chrome.tabs.Tab, previousTab?: Tab): Tab {
-    const commonTab: CommonTab = {
-        id: previousTab?.id ?? window.crypto.randomUUID(),
-        chromeId: chromeTab.id as number,
-        url: chromeTab.url as string,
-        faviconUrl: chromeTab.favIconUrl,
-    }
-}
-
-async function gatherTabs(): Promise<CommonTab[]> {
-    const tabs = await chrome.tabs.query({})
-
-    return tabs.map((tab) => {
-        return {
-            id: window.crypto.randomUUID(),
-            originalTab: tab,
-        }
-    })
-}
+// TODO: URL might be different. Tested in chrome and chromium
+const NEWTAB_URL = 'chrome://newtab/'
 
 export const useTabsStore = defineStore('tabs', () => {
+    let isRestoringTab = false
+
+    // NOTE: When chrome is closed it fires tabs.onRemoved events first, then windows.onRemoved
+    // so we cannot distinguish between closing chrome and closing a tab. Because of this all writes to
+    // `lockableChromeAsyncStorage` are **deferred by 1 second** (though in-memory data is always up-to-date)
+    const lockableChromeAsyncStorage = new LockableChromeAsyncStorage(chrome.storage.local)
+    const storedTabs = useStorageAsync<StoredTabs>('storedTabs', { pinned: [], unpinned: [] }, lockableChromeAsyncStorage)
+
+    const pinnedTabs = computed(() => storedTabs.value.pinned)
+    const unpinnedTabs = computed(() => storedTabs.value.unpinned)
+    const tabs = computed<Tab[]>(() => [...pinnedTabs.value, ...unpinnedTabs.value])
+
+    // TODO: overall performance of this might be better if we index more things maybe
+    // (chromeIdToTab, idToTab, etc.)
+    const tabsChromeIds = computed(() => new Set(tabs.value.map(tab => tab.chromeId)))
     const activeTabId = ref<string>()
-    const pinnedTabs = useStorageAsync<PinnedTab[]>('pinnedTabs', [], chromeAsyncLocalStorage)
-    const unpinnedTabs = useStorageAsync<UnpinnedTab[]>('unpinnedTabs', [], chromeAsyncLocalStorage)
 
-    const tabs = computed(() => [...pinnedTabs.value, ...unpinnedTabs.value])
+    const withTab = withElement(() => tabs.value)
+    const withTabAsync = withElementAsync(() => tabs.value)
 
-    function mutateTabByOriginalId(originalTabId: number, callback: (tab: CommonTab) => void) {
-        const tab = tabs.value.find((tab) => tab.originalTab.id === originalTabId)
-        if (tab) callback(tab)
+    async function restoreTabs() {
+        const chromeTabs = await chrome.tabs.query({})
+
+        const activeChromeTab = chromeTabs.find(chromeTab => chromeTab.active)
+
+        const lastUnpinnedTab = unpinnedTabs.value.at(-1)
+        if (activeChromeTab?.url === NEWTAB_URL && lastUnpinnedTab?.url === NEWTAB_URL) deleteFromArrayByReference(unpinnedTabs.value, lastUnpinnedTab)
+
+        unpinnedTabs.value.push(...chromeTabs.map(chromeTab => chromeTabToCustomTab(chromeTab)).filter(tab => !tabsChromeIds.value.has(tab.chromeId)))
+
+        if (activeChromeTab)
+            withTab(
+                tab => tab.chromeId === activeChromeTab.id,
+                tab => (activeTabId.value = tab.id),
+            )
     }
 
-    function activateTab(tabId: string) {
-        chrome.tabs.update(tabs.value.find((tab) => tab.id === tabId)!.originalTab.id!, { active: true })
+    async function createNewTab() {
+        await chrome.tabs.create({})
     }
 
-    function removeTab(tabId: string) {
-        chrome.tabs.remove(tabs.value.find((tab) => tab.id === tabId)!.originalTab.id!)
+    async function activateTab(tabId: string) {
+        await withTabAsync(
+            tab => tab.id === tabId,
+            async tab => {
+                try {
+                    await chrome.tabs.update(tab.chromeId, { active: true })
+                } catch {
+                    // TODO: extension api throws error when tab is not present
+                    // might be better to check tab existence explicitly
+                    isRestoringTab = true
+                    const createdChromeTab = await chrome.tabs.create({ url: tab.isPinned ? tab.pinnedUrl : tab.url })
+                    swapObjectProperties(tab, chromeTabToCustomTab(createdChromeTab, tab))
+                }
+
+                activeTabId.value = tab.id
+            },
+        )
     }
 
-    function newTab() {
-        chrome.tabs.create({})
+    async function removeTab(tabId: string) {
+        await withTabAsync(
+            tab => tab.id === tabId,
+            async tab => {
+                deleteFromArrayByReference(tab.isPinned ? pinnedTabs.value : unpinnedTabs.value, tab)
+                await chrome.tabs.remove(tab.chromeId)
+            },
+        )
     }
 
     function changePinState(tabId: string) {
-        const tab = tabs.value.find((tab) => tab.id === tabId)
-        if (!tab) return
-
-        if (tab.isPinned) {
-            pinnedTabs.value = pinnedTabs.value.filter((tab) => tab.id !== tabId)
-            unpinnedTabs.value.push(tab)
-        } else {
-            unpinnedTabs.value = unpinnedTabs.value.filter((tab) => tab.id !== tabId)
-            pinnedTabs.value.push(tab)
-        }
-
-        tab.isPinned = !tab.isPinned
+        withTab(
+            tab => tab.id === tabId,
+            tab => {
+                if (tab.isPinned) {
+                    deleteFromArrayByReference(pinnedTabs.value, tab)
+                    unpinnedTabs.value.push(pinnedTabToUnpinnedTab(tab))
+                } else {
+                    deleteFromArrayByReference(unpinnedTabs.value, tab)
+                    pinnedTabs.value.push(unpinnedTabToPinnedTab(tab))
+                }
+            },
+        )
     }
 
-    onMounted(() => {
-        gatherTabs().then((newTabs) => {
-            unpinnedTabs.value = newTabs
-            const activeTab = unpinnedTabs.value.find((tab) => tab.originalTab.active)
-            if (activeTab) {
-                activeTabId.value = activeTab.id
-            }
-        })
+    // to prevent data race, load tabs from storage first
+    watchOnce(storedTabs, restoreTabs, { immediate: false })
 
-        chrome.tabs.onCreated.addListener((tab) => {
-            unpinnedTabs.value.push({
-                id: window.crypto.randomUUID(),
-                originalTab: tab,
-            })
-        })
-
-        chrome.tabs.onRemoved.addListener((tabId) => {
-            const tab = tabs.value.find((tab) => tab.originalTab.id === tabId)
-            if (!tab) return
-
-            if (tab.isPinned) {
-                pinnedTabs.value = pinnedTabs.value.filter((tab) => tab.originalTab.id !== tabId)
-            } else {
-                unpinnedTabs.value = unpinnedTabs.value.filter((tab) => tab.originalTab.id !== tabId)
-            }
-        })
-
-        chrome.tabs.onUpdated.addListener((tabId, changeInfo, originalTab) => {
-            mutateTabByOriginalId(tabId, (tab) => {
-                tab.originalTab = originalTab
-            })
-        })
-
-        chrome.tabs.onActivated.addListener((activeInfo) => {
-            const tab = tabs.value.find((tab) => tab.originalTab.id === activeInfo.tabId)
-            if (!tab) return (activeTabId.value = undefined)
-            activeTabId.value = tab.id
-        })
+    chrome.tabs.onCreated.addListener(tab => {
+        if (isRestoringTab) return (isRestoringTab = false)
+        unpinnedTabs.value.push(chromeTabToCustomTab(tab))
     })
 
-    return { tabs, unpinnedTabs, pinnedTabs, activeTabId, activateTab, removeTab, newTab, changePinState }
+    chrome.tabs.onActivated.addListener(activeInfo => {
+        withTab(
+            tab => tab.chromeId === activeInfo.tabId,
+            tab => (activeTabId.value = tab.id),
+        )
+    })
+
+    chrome.tabs.onRemoved.addListener(tabId => {
+        withTab(
+            tab => tab.chromeId === tabId,
+            tab => deleteFromArrayByReference(tab.isPinned ? pinnedTabs.value : unpinnedTabs.value, tab),
+        )
+    })
+
+    chrome.tabs.onUpdated.addListener((tabId, _changeInfo, chromeTab) => {
+        withTab(
+            tab => tab.chromeId === tabId,
+            tab => swapObjectProperties(tab, chromeTabToCustomTab(chromeTab, tab)),
+        )
+    })
+
+    return {
+        unpinnedTabs: readonly(unpinnedTabs),
+        pinnedTabs: readonly(pinnedTabs),
+        tabs: readonly(tabs),
+        activeTabId: readonly(activeTabId),
+        createNewTab,
+        activateTab,
+        removeTab,
+        changePinState,
+    }
 })

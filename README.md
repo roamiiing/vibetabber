@@ -1,33 +1,35 @@
 # vibetabber
 
-This template should help get you started developing with Vue 3 in Vite.
+Chrome extension for managing tabs like Arc.
 
-## Recommended IDE Setup
+## Development
 
-[VSCode](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- Install dependencies with:
+    ```sh
+    npm ci
+    ```
+- Build and run extension
+    - On MacOS:
+        ```sh
+        npm run build && /Applications/Chromium.app --load-extension="~/dev/vibetabber/dist"`
+        ```
+    - On Windows + WSL:
+        ```powershell
+        npm run build && /mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe --load-extension="\\\\wsl.localhost\fedora\home\roam\dev\vibetabber\dist"
+        ```
 
-## Type Support for `.vue` Imports in TS
+## TODO
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
-
-```sh
-npm install
-```
-
-### Compile and Hot-Reload for Development
-
-```sh
-npm run dev
-```
-
-### Type-Check, Compile and Minify for Production
-
-```sh
-npm run build
-```
+- Basic functionality
+    - [ ] Right click to open context menu
+    - [ ] Drag'n'drop to move and pin tabs
+    - [ ] Folders
+- Research
+    - [x] Restore tabs on chrome reopen (are tab IDs the same?)
+        - [ ] No, they are not. Ask users to set their settings to not restore automatically
+    - [ ] Are there events that fire on closing chrome _before_ `tabs.onRemove`
+    - [ ] WebLLM for generating tab titles based on content
+- Beautify
+    - [ ] Customizable UI
+- Testing
+    - [ ] Test how closing chrome works when a tab `alert`s on `beforeunload`
